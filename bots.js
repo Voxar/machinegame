@@ -1,7 +1,8 @@
 function distance(a, b) {
     var xx = b.x - a.x; 
     var yy = b.y - a.y;
-    return Math.sqrt(xx*xx+yy*yy)
+    //return Math.sqrt(xx*xx+yy*yy)
+    return Math.max(Math.abs(xx),Math.abs(yy))
 }
 function inrange(robot, list, maxdist, f) {
   var f = f ? f : x => true
@@ -56,65 +57,122 @@ function index(p){
     return p.x + ","+p.y
 }
 
-class Bot {
-    constructor(robot) {
-        this.robot = robot
-    }
-    moveTo(x, y) {
-        if (typeof(x) == "number") 
-            x = {x:x,y:y}
-        this.robot.moveTo(x)
-        this.robot.x += x.x
-        this.robot.y += x.y
-    }
-    collect() { this.robot.collect }
-    get key() { return index(this.robot) }
-    get charges() { return this.robot.charges }
-    attack(enemy) { this.robot.attack(enemy) }
-}
-
 print = console.log
 
+// persistent data
 data = {
-    charges: {},
+    charges: [],
     bot: {},
 }
 
+function collect(bot) {
+    // collect candy
+    var charge = bot.collecting ? bot.collecting : closest(bot, data.charges, 100, x => x.bot === bot || x.bot == undefined)
+    if (charge) {
+        charge.bot = bot
+        bot.collecting = charge
+        if (isat(bot, charge)) {
+            bot.collect()
+            delete data.charges[index(charge)]
+        } else {
+            bot.moveTo(charge)
+        }
+    }
+}
+
+
+class Field {
+    constructor() {
+        this._charges = {}
+        this.seen = {x: [], y:[]}
+    }
+    
+    get charges() {
+        return Object.values(this._charges)
+    }
+    
+    hasSeen(p) {
+        var index = p.x+","+p.y
+        return this.seen[index]
+    }
+    
+    didSee(p) {
+        var index = p.x+","+p.y
+        this.seen[index] = true
+    }
+    
+    ingest(state) {
+        for (var bot of state.robots) {
+            for (var x = -4; x <= 4; x++) {
+                var index = (bot.x+x)+","
+                for (var y = -4; y <= 4; y++) {
+                    this.seen[index+(bot.y+y)]
+                }   
+            }
+        }
+        for (var charge of state.charges) {
+            var index = charge.x+","+charge.y
+            if (this._charges[index] == undefined) {
+                this._charges[index] = charge
+            }
+        }
+    }
+    
+    
+}
+
+field = new Field()
+
+
 function play(state) {
-    console.log(state.robots[0])
-    state.robots[0].hello = "hello"
+    print("Turn", state.turn)
+    print("state:", state)
+    
+    field.ingest(state)
+    print("Field:", field)
     var bots = state.robots.filter(r => r.charges > 0)
     var enemies = state.red.robots.filter(r => r.charges > 0)
     var flag = state.red.flag
+    var home = {x:0, y:0}
+    var charges = field.charges
     
-    // Save seen charges
-    for (var charge of state.charges) {
-        data.charges[index(charge)] = charge
+    
+    /// try to keep this many charges at the flag
+    var goalkeeperCharges = 5 * (state.turn/10)
+    
+    var totcharges = 0
+    var keepers = []
+    for (var i = 0; i < bots.length - 3; i++) {
+        if (totcharges >= goalkeeperCharges) {
+            break
+        }
+        var bot = closest(home, bots, 10000, b => !keepers.find(k=>k.id == b.id))
+        keepers.push(bot.id)
+        bot.goalkeeper = true
+        if (isat(home, bot)) {
+            totcharges += bot.charges
+        }
     }
-    var charges = Object.values(data.charges)
-    
-    var goalkeepers = Math.floor(bots.length/2);
-    
+    print("Goalkeepers", totcharges, "charges")
+     
     for (var bot of bots) {
-        var botindex = index(bot)
-        var botdata = data.bot[botindex]
-        delete data.bot[botindex]
-        
-        console.log("botdata", data)
-        
-        botdata = "Hello bot"
-        
         // attack enemies
-        var enemy = closest(bot, enemies, 10, x => x.charges > 0)
+        var enemy = closest(bot, enemies, 3, x => x.charges > 0)
         if (enemy) {
-            if (canattack(bot, enemy)) {
-                print("attacking")
+            if (distance(bot, enemy) == 1) {
+                print("⛔️ Attack!", bot, enemy)
                 bot.attack(enemy)
                 enemy.charges--
-            } else {
-                print("approaching", distance(bot,enemy))
+            } else if (!bot.goalkeeper) {
+                print("☢️ Approach", bot, enemy, distance(bot,enemy))
                 bot.moveTo(enemy)
             }
+            continue
+        }
+        
+        // Protect the flag        
+        if (bot.goalkeeper) {
+            bot.moveTo({x:0, y:0})
             continue
         }
         
@@ -124,27 +182,19 @@ function play(state) {
             continue
         }
 
-        // Protect the flag        
-        if (goalkeepers > 0 && bot.charges >= 5) {
-            goalkeepers--
-            bot.moveTo({x:0, y:0})
-            continue
-        }
-        
         // Duplicate
-        if (bot.charges > 3 + bots.length/10) {
+        if (!bot.goalkeeper && bot.charges > 3 + bots.length/10) {
             bot.clone()
             continue
         }
         
         // collect candy
-        var charge = closest(bot, charges, 100, x => !x.taken)
-        console.log(charge)
+        var charge = bot.charge ? bot.charge : closest(bot, charges, 100, charge => charge.bot == bot.id || !charge.bot)
         if (charge) {
-            charge.taken = true
+            charge.bot = bot.id
             if (isat(bot, charge)) {
                 bot.collect()
-                delete data.charges[index(charge)]
+                delete field._charges[index(charge)]
             } else {
                 bot.moveTo(charge)
             }
@@ -156,44 +206,14 @@ function play(state) {
             x:bot.x+1,
             y:bot.y+1
         })
-        
-        data.bot[index(bot)] = botdata
-    }    
+    }
+    
 }
-//
-// class Robot {
-//     constructor(x, y, charges) {
-//         this.x = x
-//         this.y = y
-//         this.charges = charges
-//     }
-//     moveTo(x, y) {
-//
-//     }
-// }
-//
-// play({
-//     robots: [
-//         new Robot(0,0,1),
-//         new Robot(0,0,1),
-//     ],
-//     red: {
-//         flag: {x: 10, y: 10},
-//         robots: [
-//             {x:8, y:8, charges:2},
-//             {x:3, y:2, charges:2},
-//         ]
-//     },
-//     charges: [
-//         {x: 3, y: 3}
-//     ]
-// })
-//
-//
-//
-//
-//
-//
-//
-//
-//
+
+
+
+
+
+
+
+
