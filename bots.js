@@ -411,24 +411,80 @@ function key_for(item) { return item.x+","+item.y }
 
 function not_taken(charge) { return !charge.bot }
 
+class Tree {
+    constructor(size = 10) {
+        this.size = size
+        this.clear()
+    }
+    
+    clear() {
+        this.data = []
+    }
+    
+    add(point) {
+        var x = Math.floor(point.x/this.size)
+        var y = Math.floor(point.y/this.size)
+        if (!this.data[x]) this.data[x] = [];
+        if (!this.data[x][y]) this.data[x][y] = [];
+        this.data[x][y].push(point)
+    }
+    
+    search(point, dist = 1, f = x => true) {
+        var result = []
+        var sx = Math.floor((point.x - dist)/this.size)
+        var sy = Math.floor((point.y - dist)/this.size)
+        var ex = Math.floor((point.x + dist)/this.size)
+        var ey = Math.floor((point.y + dist)/this.size)
+        
+        // print("start|",sx,sy)
+        // print("  end|",ex,ey)
+        for (var x = sx; x <= ex; x++) {
+            for (var y = sy; y <= ey; y++) {
+                if (!this.data[x]) continue;
+                if (!this.data[x][y]) continue;
+                for (var p of this.data[x][y]) {
+                    if (distance(point, p) <= dist && f(p)) {
+                        result.push(p)
+                    }
+                }                
+            }
+        }
+        return result
+    }
+    
+    first(p, dist=1) {
+        return this.search(p, dist)
+    }
+}
+function assert(expr, msg = "assert failure") {
+    if (!expr) throw msg
+}
+
 class World {
     
     constructor() {
         this.bots = []
         this._bots_map = {}
+        this._bots_tree = new Tree(10)
         
         this.enemies = []
         this._enemies_map = {}
         
         this.charges = []
         this._charges_map = {}
+        this._charges_tree = new Tree(10)
         
         this.seen_squares = {}
+        
+        this.attacks = []
     }
     
     process(state) {
+        this.turn = state.turn
+        
         var old_bots = this._bots_map
         this._bots_map = {}
+        this._bots_tree.clear()
         for (var newbot of state.robots) {
             var bot = old_bots[newbot.id]
             if (!bot) { 
@@ -439,8 +495,7 @@ class World {
                 bot.charges = newbot.charges
             }
             this._bots_map[bot.id] = bot
-            this.bots = Object.values(this._bots_map)
-            
+            this._bots_tree.add(bot)
 
             for (var x = -4; x <= 4; x++) {
                 var index = (bot.x+x)+","
@@ -448,8 +503,9 @@ class World {
                     this.seen_squares[index+(bot.y+y)] = true
                 }   
             }
-            
         }
+        
+        this.bots = Object.values(this._bots_map)
         
         var old_enemies = this._enemies_map
         this._enemies_map = {}
@@ -463,34 +519,52 @@ class World {
                 enemy.charges = newenemy.charges
             }
             this._enemies_map[enemy.id] = enemy
-            this.enemies = Object.values(this._enemies_map)
         }
+        this.enemies = Object.values(this._enemies_map)
+        
         
         if (!this.enemy_flag) {
             this.enemy_flag = state.red.flag
+            this.enemy_flag_dir = state.red.flag
+        }
+
+        // attack statistics for guessing enemy flag direction
+        var count = this.attacks.length - 50
+        if (count > 0) this.attacks.splice(0, count);
+        if (!this.enemy_flag && this.attacks.length > 20 && !(state.turn%10)) {
+            var sum = this.attacks.reduce(add, {x:0,y:0})
+            sum.x /= -this.attacks.length
+            sum.y /= -this.attacks.length
+            
+            if (length(sum) > 1) {
+                this.enemy_flag_dir = this.attacks.length > 20 ? sum : undefined
+                print("flag_dir", this.enemy_flag_dir)
+            }
         }
         
         var old_charges = this._charges_map
         this._charges_map = {}
+        this._charges_tree.clear()
         for (var newcharge of state.charges) {
             var key = key_for(newcharge)
             var charge = old_charges[key]
             if (!charge) { charge = newcharge }
             this._charges_map[key] = charge
+            this._charges_tree.add(charge)
         }
         this.charges = Object.values(this._charges_map)
     }
     
     closest_bot(bot, range = 1000, f = x => x.charges > 0) {
-        return closest(bot, this.bots, range, b => b !==bot && f(b))
+        // return closest(bot, this.bots, range, b => b !==bot && f(b))
+        return this._bots_tree.search(bot, range, f)
+            .sort(makeCompareDistance(bot))[0]
     }
     
     closest_charge(bot, range = 1000, f = x => true) {
-        return closest(bot, this.charges, range, f)
-    }
-    
-    charges_around(bot, range = 1000, f = x => true) {
-        return inrange(bot, this.charges, range, f)
+        return this._charges_tree.search(bot, range, f)
+            .sort(makeCompareDistance(bot))[0]
+        // return closest(bot, this.charges, range, f)
     }
     
     closest_enemy(bot, range = 1000, f = x => x.charges > 0) {
@@ -500,6 +574,14 @@ class World {
     needs_exploring(p) {
         const key = key_for(p)
         return this.seen_squares[key] !== true
+    }
+    
+    bots_inrange(pos, dist = 1000, f = x => true) {
+        return this._bots_tree.search(pos, dist, f)
+    }
+    
+    charges_inrange(pos, dist = 1000, f = x => true) {
+        return this._charges_tree.search(pos, dist, f)
     }
     
     is_bot_alive(bot) {
@@ -548,7 +630,6 @@ class World {
             // return a.homedist - b.homedist
             return a.dist - b.dist
         })
-        print(list)
         return list[0].point
     }
 
@@ -581,11 +662,11 @@ class World {
             return weights.enemy_flag
         } else if (this.closest_enemy(p, 0)) {
             return weights.enemy
-        } else if (this.closest_enemy(p, 2)) {
+        } else if (this.closest_enemy(p, 1)) {
             return weights.danger
         } else if (this.closest_charge(p, 0)) {
             return weights.charge
-        } else if (this.closest_bot(p, 2)) {
+        } else if (this.closest_bot(p, 0)) {
              return weights.friend
         } else if (this.needs_exploring(p)) {
             return weights.unexplored
@@ -663,8 +744,10 @@ class AI {
     }
     
     mark_charge(charge) {
+        var charge = this.world._charges_map[key_for(charge)]
+        charge.bot = this.bot
         this.charge = charge
-        this.world._charges_map[key_for(charge)].bot = this.bot
+        return charge
     }
     
     drop_charge(charge) {
@@ -672,18 +755,43 @@ class AI {
         this.world._charges_map[key_for(charge)].bot = undefined
     }
     
+    pickup_charge(range=5) {
+        if (!this.charge) 
+            this.charge = this.world.closest_charge(this.bot, range, c => !c.bot);
+        if (this.charge) {
+            this.charge.bot = this.bot
+            if (isat(this.bot, this.charge)) {
+                this.collect(this.charge)
+                return true
+            } else if (this.moveTo) {
+                this.moveTo(this.charge)
+                return true
+            }
+        }
+        return false
+    }
+    
+    clone(limit = 3) {
+        if (this.world.bots.length == 256) return false;
+        if (this.bot.charges >= limit) {
+            this.bot.clone()
+            return true
+        }
+        return false
+    }
+    
     collect(charge) {
         // world-mark the charge
-        this.world._charges_map[key_for(charge)].bot = this.bot
+        charge.bot = this.bot
         // drop the charge
         this.charge = undefined
         this.bot.collect()
     }
     
     attack(enemy) {
-        var cached = this.world._enemies_map[enemy.id]
-        if (cached) cached.charges--
+        enemy.charges--;
         this.bot.attack(enemy)
+        world.attacks.push(enemy)
     }
 }
 
@@ -704,8 +812,7 @@ class BreederAI extends AI {
         }
         
         // clones
-        if (bot.charges >= 3) {
-            bot.clone()
+        if (this.clone(3)) {
             return
         }
         
@@ -766,14 +873,19 @@ class SeekerAI extends AI {
     }
     
     next_waypoint() {
-        // this.waypoint = this.seek_pattern.next().value
-        this.waypoint = world.find_unexplored(home, {x:1, y:0}, 360, 8)
+        // this.waypoint = world.find_unexplored(home, {x:1, y:0}, 360, 8)
+        do { this.waypoint = this.seek_pattern.next().value
+        } while (!this.world.needs_exploring(this.waypoint))
     }
     
     update(world = this.world, bot = this.bot) {
         
+        if (distance(bot, this.waypoint) <= 2) {
+            this.next_waypoint()
+        }
+        
         var enemy = world.closest_enemy(bot, 1)
-        if (enemy && bot.charges > enemy.charges) {
+        if (enemy && bot.charges > enemy.charges*2) {
             this.attack(enemy)
             return
         }
@@ -783,21 +895,18 @@ class SeekerAI extends AI {
             return
         }
         
-        if (isat(bot, this.waypoint)) {
-            this.next_waypoint()
-        }
-        
-        // Eats any charge it stumbles upon
-        var charge = world.closest_charge(bot, 0)
-        if (charge) {
-            this.collect(charge)
-            return
+        if (!enemy) { // just run if being hunted
+            // Eats any charge it stumbles upon
+            var charge = world.closest_charge(bot, 0)
+            if (charge) {
+                this.collect(charge)
+                return
+            }
         }
         
         // If world population is low, go for charges and clone
-        if (world.bots.length < 3) {
-            if (bot.charges >= 3) {
-                bot.clone()
+        if (world.bots.length < 3 && !enemy) {
+            if (this.clone(3)) {
                 return
             }
             
@@ -851,6 +960,12 @@ class GuardAI extends AI {
         
         // move to base and sit there
         if (!isat(this.bot, home)) {
+            
+            // if see a charge, eat it
+            if (this.pickup_charge(5)) {
+                return
+            }
+            
             this.moveTo(home)
             return
         }
@@ -864,7 +979,7 @@ class GuardAI extends AI {
         
             friend: 1,// going together is good
             enemy_flag: 1,
-            charge: 10, // ignore charges
+            charge: 1, // ignore charges
             unexplored: 10,
             empty: 10,
         })
@@ -880,8 +995,33 @@ class GruntAI extends AI {
             this.attack(enemy)
             return
         }
+
+        if (this.world.enemy_flag) {
+            this.moveTo(this.world.enemy_flag)
+            return
+        }
         
-        this.moveTo(this.world.enemy_flag)
+        // clear waypoint nowandthen?
+        if (this.world.turn > this.waypointExp || this.waypoint && distance(this.waypoint, this.bot) < 3) {
+            delete this.waypoint
+        }
+        
+        if (!this.waypoint) {
+            this.waypointExp = this.world.turn + 50
+            if (this.world.enemy_flag_dir) {
+                // wander towards unexplored bits towards the enemy flag
+                this.waypoint = this.world.find_unexplored(this.bot, this.world.enemy_flag_dir, 90, 3)
+            } else {
+                // look for the closest unexplored bit
+                this.waypoint = this.world.find_unexplored(this.bot, {x:1, y:-1}, 360, 8)
+            }
+        }
+        
+        if (this.waypoint) {
+            this.moveTo(this.waypoint)
+            return
+        }
+
     }
     
     moveTo(target) {
@@ -892,7 +1032,7 @@ class GruntAI extends AI {
             friend: 1,// going together is good
             enemy_flag: 1,
             charge: 10, // ignore charges
-            unexplored: 10,
+            unexplored: 1,
             empty: 10,
         })
         this.bot.moveTo(step)
@@ -903,70 +1043,92 @@ class Player {
     constructor(world) {
         this.world = world
         this.squarePatternGenerator = makeSquareSearchPattern()
-        this.seeker = new SeekerAI(this.world, undefined, this.squarePatternGenerator)
-        this.breeders = []
+
+        this.seekerCount = 0
+        this.breederCount = 0
+        this.gruntCount = 0
     }
     
     update(world = this.world) {
-        if (!world.is_bot_alive(this.seeker.bot)) {
+        if (this.seekerCount < 2) {
             print("need a new seeker")
             // need to find a new seeker!
             // try to get one close to the waypoint
-            var candidates = inrange(this.seeker.waypoint, world.bots)
+            var candidates = [...world.bots]
                 .sort((a,b) => {
                     // put important ai's last
                     // If both or neither has ai
                     if ((a.ai && b.ai) || (!a.ai && !b.ai)) { 
-                        return distance(a, this.seeker.waypoint) - distance(b, this.seeker.waypoint)
+                        return a.charges - b.charges
+                        // return distance(a, this.seeker.waypoint) - distance(b, this.seeker.waypoint)
                     }
                     if (a.ai) { return 1 }
                     if (b.ai) { return -1}
                     throw "Error in compare"
                 })
-            this.seeker.bot = candidates[0]
-            this.seeker.bot.ai = this.seeker
-        }
-        
-        // Breeders makes clones. Make sure we have some
-        // clean out the dead 
-        for (var i = 0; i < this.breeders.length; i++) {
-            var bot = this.breeders[i].bot
-            if (!world.is_bot_alive(bot)) {
-                print("☢️ A breeder has died")
-                this.breeders.splice(i, 1)
-                i--
+                .filter(bot => !bot.ai || bot.ai.constructor.name == GuardAI.name);
+            var bot = candidates[0]
+            if (bot) {
+                bot.ai = new SeekerAI(world, bot, this.squarePatternGenerator)
             }
         }
+        
+        // Breeders makes clones. Make sure we have some (but also at least one guard)
         const breederCountTarget = 4
-        if (this.breeders.length <= breederCountTarget) {
+        if (this.breederCount < breederCountTarget && (this.guardCount > 0 || this.breederCount < 1)) {
             // Pick candidates that are far away from home (and thus danger)
-            var candidates = inrange(home, world.bots, 1000, a => !a.ai)
+            var candidates = world.bots.filter(a => !a.ai)
                 .sort((b, a) => { return distance(a, home) - distance(b, home) })
             for (var bot of candidates) {
                 bot.ai = new BreederAI(world, bot)
-                this.breeders.push(bot.ai)
-                if (this.breeders.length >= breederCountTarget) break
+                this.breederCount++;
+                if (this.breederCount >= breederCountTarget) break
             }
         }
         
-        if (world.enemy_flag && world.bots.length > 50) {
-            for (var bot of inrange(home, world.bots, 10, b => b.ai && b.ai.constructor.name == "GuardAI")) {
+        if (world.enemy_flag_dir && world.bots.length > 50) {
+            for (var bot of world.bots_inrange(home, 10, b => b.ai && b.ai.constructor.name == GuardAI.name)) {
+                if (this.guardCount < 12) break;
+                print("GRUNT!")
                 bot.ai = new GruntAI(world, bot)
+                this.guardCount--;
+                this.gruntCount++;
             }
         }
         
-
+        this.seekerCount = 0
+        this.breederCount = 0
+        this.gruntCount = 0
+        this.guardCount = 0
         for (var bot of world.bots) {
-            
+            //New bots become guards
             if (!bot.ai) {
-                // Assign any bot without ai
                 bot.ai = new GuardAI(world, bot)
+            }
+            
+            switch (bot.ai.constructor.name) {
+                case GuardAI.name: this.guardCount++; break;
+                case BreederAI.name: this.breederCount++; break;
+                case SeekerAI.name: this.seekerCount++; break;
+                case GruntAI.name: this.gruntCount++; break;
+            }
+            
+            if (!(this.world.turn % 10) && bot.ai.constructor.name == SeekerAI.name) {
+                print("Seeker:", bot)
             }
             
             bot.ai.update()
         }
-        
-        print(this.seeker)
+
+        if (!(this.world.turn % 10)) {
+            print("BOTS", this.world.bots.length)
+            print("FlagDir", this.world.enemy_flag_dir)
+            
+            print("Seekers:", this.seekerCount)
+            print("Breeders:", this.breederCount)
+            print("Grunts:", this.gruntCount)
+            print("Guards:", this.guardCount)
+        }
     }
 }
 
@@ -993,6 +1155,11 @@ if(typeof process === 'object') {
             {x:6,y:6},
         ]
     })
+    
+    print("ok")
+    print("find charge", world.closest_charge({x:2,y:2}, 0))
+
+    
     print("world", world)
     print("raycast", world.raycast(home, {x:3, y: 9}, stepsize=10))
     player.update(world)
@@ -1000,4 +1167,8 @@ if(typeof process === 'object') {
     print("feel", world.find_unexplored(home, {x: 1, y: 0}, 360, 8))
     
     new BreederAI(world, world.bots[0]).update()
+    
+    var tree = new Tree()
+    world.charges.forEach(tree.add, tree)
+    print("tree",tree.search({x:4, y:4}, 1000))
 }
