@@ -483,6 +483,7 @@ class World {
     
     process(state) {
         this.turn = state.turn
+        this.username = state.username
         
         // Collect all our robot
         var old_bots = this._bots_map
@@ -1089,13 +1090,15 @@ class Player {
         }
 
         if (!(this.world.turn % 10)) {
-            print("BOTS", this.world.bots.length)
-            print("FlagDir", this.world.enemy_flag_dir)
-            
-            print("Seekers:", this.seekerCount)
+            print("--- Turn:", this.world.turn)
+            print("  Player:", this.world.username)
+            print("    Bots:", this.world.bots.length)
+            print(" Flagdir:", this.world.enemy_flag_dir)
+            print(" Seekers:", this.seekerCount)
             print("Breeders:", this.breederCount)
-            print("Grunts:", this.gruntCount)
-            print("Guards:", this.guardCount)
+            print("  Grunts:", this.gruntCount)
+            print("  Guards:", this.guardCount)
+            print(" ---")
         }
     }
 }
@@ -1140,4 +1143,5 @@ if(typeof process === 'object') {
     world.charges.forEach(tree.add, tree)
     print("tree",tree.search({x:4, y:4}, 1000))
 }
-if (console.clear)console.clear();
+
+print("AI Version 1.0")
