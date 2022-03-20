@@ -4,7 +4,9 @@ print = console.log
 const toDeg = 1/Math.PI*180
 const toRad = Math.PI/180
 
+
 var astar = {
+    // https://github.com/bgrins/javascript-astar
     pathTo: function(node) {
         var curr = node;
         var path = [];

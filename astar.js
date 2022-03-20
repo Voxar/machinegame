@@ -1,3 +1,4 @@
+//https://github.com/bgrins/javascript-astar
 var astar = {
     pathTo: function(node) {
         var curr = node;
