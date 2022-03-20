@@ -484,9 +484,11 @@ class World {
     process(state) {
         this.turn = state.turn
         
+        // Collect all our robot
         var old_bots = this._bots_map
         this._bots_map = {}
         this._bots_tree.clear()
+        this.bots = []
         for (var newbot of state.robots) {
             var bot = old_bots[newbot.id]
             if (!bot) { 
@@ -498,6 +500,7 @@ class World {
             }
             this._bots_map[bot.id] = bot
             this._bots_tree.add(bot)
+            this.bots.push(bot)
 
             for (var x = -4; x <= 4; x++) {
                 var index = (bot.x+x)+","
@@ -507,10 +510,10 @@ class World {
             }
         }
         
-        this.bots = Object.values(this._bots_map)
-        
+        // Collect all of our enemies
         var old_enemies = this._enemies_map
         this._enemies_map = {}
+        this.enemies = []
         for (var newenemy of state.red.robots) {
             var enemy = old_enemies[newenemy.id]
             if (!enemy) {
@@ -521,8 +524,23 @@ class World {
                 enemy.charges = newenemy.charges
             }
             this._enemies_map[enemy.id] = enemy
+            this.enemies.push(enemy)
         }
-        this.enemies = Object.values(this._enemies_map)
+        
+        // Collect all the charges. We keep an internal list to 
+        // remember the ones that are left behind
+        var old_charges = this._charges_map
+        this._charges_map = {}
+        this._charges_tree.clear()
+        this.charges = []
+        for (var newcharge of state.charges) {
+            var key = key_for(newcharge)
+            var charge = old_charges[key]
+            if (!charge) { charge = newcharge }
+            this.charges.push(charge)
+            this._charges_map[key] = charge
+            this._charges_tree.add(charge)
+        }
         
         
         if (!this.enemy_flag) {
@@ -543,18 +561,6 @@ class World {
                 print("flag_dir", this.enemy_flag_dir)
             }
         }
-        
-        var old_charges = this._charges_map
-        this._charges_map = {}
-        this._charges_tree.clear()
-        for (var newcharge of state.charges) {
-            var key = key_for(newcharge)
-            var charge = old_charges[key]
-            if (!charge) { charge = newcharge }
-            this._charges_map[key] = charge
-            this._charges_tree.add(charge)
-        }
-        this.charges = Object.values(this._charges_map)
     }
     
     closest_bot(bot, range = 1000, f = x => x.charges > 0) {
@@ -634,30 +640,6 @@ class World {
         })
         return list[0].point
     }
-
-
-    weights = {
-        avoid_enemies: {
-            enemy: 0,
-            danger: 20,
-        
-            friend: 1,
-            enemy_flag: 1,
-            charge: 4,
-            unexplored: 5,
-            empty: 6,
-        },
-        attack_enemies: {
-            enemy: 0,
-            danger: 3,
-        
-            friend: 1,
-            enemy_flag: 1,
-            charge: 2,
-            unexplored: 2,
-            empty: 6,
-        }
-    }
     
     weight_at(p, weights) {
         if (this.enemy_flag && isat(p, this.enemy_flag)) {
@@ -675,7 +657,6 @@ class World {
         } else {
             return weights.empty
         }
-        
     }
     
     astar(bot, destination, weights = this.weights.avoid_enemies) {
@@ -756,16 +737,10 @@ class AI {
         empty: 10,
     }
     
-    mark_charge(charge) {
-//        var charge = this.world._charges_map[key_for(charge)]
-        charge.bot = this.bot
-        this.charge = charge
-        return charge
-    }
-    
     drop_charge(charge) {
-        this.charge = undefined
-        this.world._charges_map[key_for(charge)].bot = undefined
+        if (!this.charge) return;
+        delete this.charge.bot
+        delete this.charge
     }
     
     pickup_charge(range=5) {
@@ -797,26 +772,29 @@ class AI {
         // world-mark the charge
         charge.bot = this.bot
         // drop the charge
-        this.charge = undefined
+        delete this.charge
         this.bot.collect()
+        return true
     }
     
     attack(enemy) {
         enemy.charges--;
         this.bot.attack(enemy)
         world.attacks.push(enemy)
+        return true
     }
     
     moveTo(target) {
         var step = world.navigate(this.bot, target, this.weights)
         if (!step) {
             print("nomove", this, target)
-            return
+            return false
         }
         if (this.world.enemy_flag && isat(step, this.world.enemy_flag)) {
             print("🎉 Got the flag!", this)
         }
         this.bot.moveTo(step)
+        return true
     }
 }
 
@@ -849,20 +827,8 @@ class BreederAI extends AI {
         }
         
         // finds charges to eat
-        var charge = this.charge ? this.charge : world.closest_charge(bot, 10, not_taken)
-        if (charge && world._charges_map[key_for(charge)]) {
-            this.mark_charge(charge)
-            if (isat(bot, charge)) {
-                this.collect(charge)
-                return
-            }
-        
-            this.moveTo(charge)
-            return
-        } else {
-            delete this.charge
-        }
-        
+        if (this.pickup_charge(10)) return;
+                
         // explore
         
         if (!this.direction) {
@@ -926,25 +892,16 @@ class SeekerAI extends AI {
         
         if (!enemy) { // just run if being hunted
             // Eats any charge it stumbles upon
-            var charge = world.closest_charge(bot, 0)
-            if (charge) {
-                this.collect(charge)
-                return
-            }
-        }
+            if (this.pickup_charge(1)) return;
+        } else { this.drop_charge() }
         
         // If world population is low, go for charges and clone
-        if (world.bots.length < 3 && !enemy) {
-            if (this.clone(3)) {
-                return
-            }
+        if (world.breederCount < 3 && !enemy) {
+            if (this.clone(3)) return;
             
-            var charge = this.charge ? this.charge : world.closest_charge(bot, 1000, not_taken)
-            if (charge) {
-                this.mark_charge(charge)
-                this.moveTo(charge)
-                return
-            }
+            if (this.pickup_charge(1000)) return;
+        } else if (this.charge) {
+            this.drop_charge()
         }
         
         // Explores the world
@@ -983,7 +940,9 @@ class GuardAI extends AI {
             return
         }
         
+        // if we got home just sit there
         if (isat(this.bot, home)) {
+            this.drop_charge()
             return
         }
 
@@ -992,7 +951,7 @@ class GuardAI extends AI {
             if (this.pickup_charge(1)) {
                 return
             }
-        }
+        } else { this.drop_charge() }
         
         this.moveTo(home)
         return
